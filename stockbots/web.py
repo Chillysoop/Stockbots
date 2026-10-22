@@ -1,6 +1,7 @@
 """The web side: Setup page, owner login, dashboard and its small JSON API."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -31,8 +32,14 @@ def json_error(message: str, status: int = 400, **extra) -> JSONResponse:
     return JSONResponse({"ok": False, "error": message, **extra}, status_code=status)
 
 
+LOGIN_WINDOW = 900  # seconds
+LOGIN_TRIES_PER_IP = 8
+LOGIN_TRIES_TOTAL = 100
+
+
 def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
-    failed_logins: list[float] = []
+    failed_logins: dict[str, list[float]] = {}  # client address -> times of wrong passwords
+    setup_lock = asyncio.Lock()  # one Setup submission at a time
 
     def logged_in(request: Request) -> bool:
         return app.settings.valid_session(request.cookies.get(COOKIE))
@@ -112,6 +119,12 @@ def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
         bad = guard_post(request)
         if bad:
             return bad
+        # Two submissions at once could both pass the "still open" check and start two
+        # sets of bots; the second one waits here and then finds Setup closed.
+        async with setup_lock:
+            return await _setup_submit(request)
+
+    async def _setup_submit(request: Request):
         status = app.setup_status()
         if not status["open"]:
             return json_error(status["reason"], 403)
@@ -200,9 +213,14 @@ def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
         if bad:
             return bad
         now = time.time()
-        recent = [t for t in failed_logins if now - t < 900]
-        failed_logins[:] = recent
-        if len(recent) >= 8:
+        # Caddy passes the visitor's address through; the app port isn't reachable directly.
+        who = request.client.host if request.client else "unknown"
+        for ip in list(failed_logins):
+            failed_logins[ip] = [t for t in failed_logins[ip] if now - t < LOGIN_WINDOW]
+            if not failed_logins[ip]:
+                del failed_logins[ip]
+        total = sum(len(v) for v in failed_logins.values())
+        if len(failed_logins.get(who, [])) >= LOGIN_TRIES_PER_IP or total >= LOGIN_TRIES_TOTAL:
             return json_error("Too many wrong tries. Wait 15 minutes.", 429)
         try:
             body = await request.json()
@@ -211,7 +229,7 @@ def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
         password = str(body.get("password") or "")
         ok = await run_in_threadpool(app.settings.check_password, password)
         if not ok:
-            failed_logins.append(now)
+            failed_logins.setdefault(who, []).append(now)
             return json_error("Wrong password.", 401)
         resp = JSONResponse({"ok": True})
         set_session(resp, request)
@@ -268,7 +286,7 @@ def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
             try:
                 msg = await run_in_threadpool(runner.flatten)
             except AlpacaError as exc:
-                return json_error(f"Alpaca: {exc.message}", 502)
+                return json_error(f"{runner.broker_label}: {exc.message}", 502)
             return JSONResponse({"ok": True, "message": msg})
         if action == "rules":
             try:

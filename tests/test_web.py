@@ -186,15 +186,39 @@ class WebTests(unittest.TestCase):
         none_on = self.setup_body()
         for b in none_on["bots"].values():
             b["enabled"] = False
-        with mock.patch("stockbots.brains.JevBrain.check_key", return_value=(True, "ok")):
+        def slow_check(*a):
+            time.sleep(0.4)  # long enough for the two submissions below to overlap
+            return True, "ok"
+
+        with mock.patch("stockbots.brains.JevBrain.check_key", side_effect=slow_check):
             r = s.post(self.base + "/api/setup", headers=H, json=none_on)
             self.assertIn("bots", r.json()["errors"])
-            r = s.post(self.base + "/api/setup", headers=H, json=only_jev)
-        self.assertEqual(r.status_code, 200, r.text)
+            # Two submissions at the same moment: exactly one wins, the other finds Setup closed.
+            codes = []
+            posts = [threading.Thread(target=lambda: codes.append(
+                requests.post(self.base + "/api/setup", headers=H, json=only_jev).status_code)) for _ in range(2)]
+            for t in posts:
+                t.start()
+            for t in posts:
+                t.join(10)
+        self.assertEqual(sorted(codes), [200, 403])
+        r = s.post(self.base + "/api/login", headers=H, json={"password": "correct horse"})
+        self.assertTrue(r.json()["ok"])
         state = s.get(self.base + "/api/state").json()
         on = {b["id"]: b["enabled"] for b in state["bots"]}
         self.assertEqual(on, {"claude": False, "jev": True, "openai": False})
         self.assertEqual(self.app.settings.data.get("anthropic_key"), "", "keys for bots that are off aren't kept")
+
+        # Wrong passwords lock out that visitor's address, not everyone (Caddy passes the address on).
+        guesser = {**H, "X-Forwarded-For": "203.0.113.9"}
+        for _ in range(8):
+            r = requests.post(self.base + "/api/login", headers=guesser, json={"password": "guess guess"})
+            self.assertEqual(r.status_code, 401)
+        r = requests.post(self.base + "/api/login", headers=guesser, json={"password": "correct horse"})
+        self.assertEqual(r.status_code, 429)
+        owner = {**H, "X-Forwarded-For": "198.51.100.4"}
+        r = requests.post(self.base + "/api/login", headers=owner, json={"password": "correct horse"})
+        self.assertEqual(r.status_code, 200, "the owner can still log in from elsewhere")
 
 
 if __name__ == "__main__":

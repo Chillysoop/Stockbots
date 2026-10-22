@@ -181,6 +181,9 @@ class SimAlpaca:
         with self.lock:
             if self.fail_orders:
                 raise AlpacaError(403, "insufficient buying power")
+            if side == "buy" and self._held(symbol) > 0:
+                # Alpaca's rule: no buy while a sell order for the same stock is open.
+                raise AlpacaError(403, "potential wash trade detected. use complex orders")
             self._fill(symbol, side, qty)
             o = self._order(symbol=symbol, qty=qty, side=side, type="market", tif=tif,
                             client_order_id=client_order_id)

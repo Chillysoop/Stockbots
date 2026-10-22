@@ -12,6 +12,7 @@ Every tick (60 seconds by default), for each bot:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -59,7 +60,8 @@ class BotRunner(threading.Thread):
         self._last_positions: dict = {}
         self.style = STYLES[bot["style"]]
         self.now_fn = now_fn
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()  # not _stop: that name belongs to Thread
+        self._act_lock = threading.RLock()  # one actor at a time: the tick, or an owner action
         self._lock = threading.RLock()
         self._daily = {"day": None, "bars": {}}
         self._last_model_call = 0.0
@@ -86,12 +88,12 @@ class BotRunner(threading.Thread):
     # ---- thread ---------------------------------------------------------
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self) -> None:
         if not self.client:
             return
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             started = time.monotonic()
             try:
                 self.tick()
@@ -99,7 +101,7 @@ class BotRunner(threading.Thread):
                 log.exception("bot %s tick failed", self.bot_id)
                 self._set(status="error", status_detail=f"{exc.__class__.__name__}: {str(exc)[:200]}")
             elapsed = time.monotonic() - started
-            self._stop.wait(max(5.0, self.cfg.tick_seconds - elapsed))
+            self._stop_event.wait(max(5.0, self.cfg.tick_seconds - elapsed))
 
     def _set(self, **kwargs) -> None:
         with self._lock:
@@ -215,9 +217,55 @@ class BotRunner(threading.Thread):
         if loss:
             self.db.record_loss_sale(self.bot_id, sym)
 
+    def _closed_outside(self, sym: str, meta_row: dict) -> None:
+        """A position the bot tracked is gone without the bot selling it: usually its stop."""
+        self.db.delete_meta(self.bot_id, sym)
+        stop = meta_row.get("stop_price")
+        avg = (self._last_positions.get(sym) or {}).get("avg_entry_price")
+        # A stop above the entry price locks in a gain; anything else counts as a loss
+        # (when unsure, the wash-sale guard errs on the side of blocking a re-buy).
+        self._record_exit(sym, loss=not (stop and avg and stop > avg))
+        self.db.add_event(self.bot_id, "info",
+                          f"{sym} position closed at {self.broker_label} (stop hit or closed outside the bot)")
+        self._seen_positions.discard(sym)
+
+    def _fills_since(self, sym: str, since: datetime) -> tuple[bool, bool]:
+        """(bought, sold): did a buy and a sell of sym fill at the broker since this moment?"""
+        try:
+            orders = self.client.closed_orders(50)
+        except AlpacaError:
+            return False, False
+        bought = sold = False
+        for o in orders:
+            if str(o.get("symbol") or "").upper() != sym.upper():
+                continue
+            t = _parse_ts(o.get("time"))
+            if t is None or t < since - timedelta(seconds=30):  # allow for clock drift
+                continue
+            side = str(o.get("side") or "").lower()
+            if side == "buy":
+                bought = True
+            elif side.startswith("sell"):
+                sold = True
+        return bought, sold
+
+    def _owner_action(self, fn):
+        """Run an owner action once any tick in progress has finished."""
+        if not self._act_lock.acquire(timeout=90):
+            raise AlpacaError(0, "the bot is still finishing its last step; try again in a minute")
+        try:
+            return fn()
+        finally:
+            self._act_lock.release()
+
     # ---- one tick -------------------------------------------------------
 
     def tick(self) -> None:
+        # Owner actions (pause, close all, prepare to move) wait for a running tick to finish.
+        with self._act_lock:
+            self._tick()
+
+    def _tick(self) -> None:
         now = self.now_fn()
         now_et = now.astimezone(ET)
         today = now_et.date().isoformat()
@@ -237,19 +285,30 @@ class BotRunner(threading.Thread):
         meta = self._reconcile(positions, now)
         self._mins_to_close = _minutes_until(clock.get("next_close"), now)
 
-        # Market data for the style's stocks plus anything we hold
+        # Market data for the style's stocks plus anything we hold. A data outage must
+        # never stop the protection below from running.
         symbols = sorted(set(self.style.universe) | set(positions))
-        features = self._features(symbols, now_et)
+        data_problem = None
+        try:
+            features = self._features(symbols, now_et)
+        except AlpacaError as exc:
+            features = {}
+            data_problem = f"market data unavailable ({exc.message[:120]}); protecting positions only"
+            log.warning("bot %s: %s", self.bot_id, data_problem)
 
         paused = bool(self.db.bot_state(self.bot_id).get("paused"))
 
-        # Every position gets a protective stop held at Alpaca.
+        # Every position gets a protective stop held at the broker.
         self._guard_stops(positions, open_orders, meta, features, now)
 
         # Forced exits never wait for the AI.
         if self._forced_exits(positions, meta, features, now_et, today):
             account, positions, open_orders = self._refresh_account(clock, today)
             meta = self.db.get_meta(self.bot_id)
+
+        if data_problem:
+            self._set(status="running", status_detail=data_problem, entry_blocker="no market data")
+            return
 
         ctx = risk.RiskContext(
             cfg=self.cfg,
@@ -314,18 +373,24 @@ class BotRunner(threading.Thread):
 
     def _reconcile(self, positions: dict, now: datetime) -> dict:
         meta = self.db.get_meta(self.bot_id)
-        for sym, m in meta.items():
+        for sym, m in list(meta.items()):
             if sym in positions:
                 continue
-            opened = datetime.fromisoformat(m["opened_at"])
-            if (now - opened).total_seconds() < 300 and sym not in self._seen_positions:
-                continue  # order may still be filling
-            self.db.delete_meta(self.bot_id, sym)
             if sym in self._seen_positions:
-                self._record_exit(sym)  # a stop hit usually means a loss
-                self.db.add_event(self.bot_id, "info",
-                                  f"{sym} position closed at {self.broker_label} (stop hit or closed outside the bot)")
-                self._seen_positions.discard(sym)
+                self._closed_outside(sym, m)
+                del meta[sym]
+                continue
+            # Never seen held: the buy may still be filling, or it filled and its stop
+            # was hit before the bot looked again. The broker's filled orders tell which.
+            opened = _parse_ts(m["opened_at"]) or now
+            age = (now - opened).total_seconds()
+            bought, sold = self._fills_since(sym, opened)
+            if bought and (sold or age >= 300):
+                self._closed_outside(sym, m)
+                del meta[sym]
+            elif age >= 300:
+                self.db.delete_meta(self.bot_id, sym)  # the buy never filled
+                del meta[sym]
         for sym in positions:
             self._seen_positions.add(sym)
             if sym not in meta:
@@ -593,25 +658,81 @@ class BotRunner(threading.Thread):
             ok, detail = self._close(sym, move.text, decided_by=None)
             self.db.set_decision_outcome(decision_id, "submitted" if ok else "error", detail)
             return
+        # The AI call can take a while: the owner may have paused (or started a move) meanwhile.
+        st = self.db.bot_state(self.bot_id)
+        if st.get("paused") or st.get("moving"):
+            self.db.set_decision_outcome(decision_id, "vetoed", "bot paused")
+            return
+        stop = verdict.stop
         coid = f"sb-{self.bot_id}-{move.kind}-{uuid.uuid4().hex[:10]}"
         try:
-            order = self.client.submit_market(sym, verdict.qty, "buy", self.style.tif, coid, stop_price=verdict.stop)
+            if move.kind == "add":
+                old = (ctx.meta.get(sym) or {}).get("stop_price")
+                price = float((ctx.features.get(sym) or {}).get("price") or 0)
+                if old and stop < old < price:
+                    stop = old  # one stop for the whole position, never looser than before
+                order = self._submit_add(sym, verdict.qty, coid, stop)
+            else:
+                order = self.client.submit_market(sym, verdict.qty, "buy", self.style.tif, coid, stop_price=stop)
         except AlpacaError as exc:
-            self.db.add_order(self.bot_id, sym, "buy", verdict.qty, move.kind, stop_price=verdict.stop,
+            self.db.add_order(self.bot_id, sym, "buy", verdict.qty, move.kind, stop_price=stop,
                               client_order_id=coid, error=str(exc))
             self.db.set_decision_outcome(decision_id, "error", exc.message)
             return
-        self.db.add_order(self.bot_id, sym, "buy", verdict.qty, move.kind, stop_price=verdict.stop,
+        self.db.add_order(self.bot_id, sym, "buy", verdict.qty, move.kind, stop_price=stop,
                           client_order_id=coid, alpaca_id=(order or {}).get("id"), status=(order or {}).get("status"))
         now = self.now_fn().isoformat(timespec="seconds")
-        self._seen_positions.add(sym)
         if move.kind == "open":
-            self.db.upsert_meta(self.bot_id, sym, now, verdict.stop)
+            self.db.upsert_meta(self.bot_id, sym, now, stop)
         else:
-            self.db.upsert_meta(self.bot_id, sym, now, verdict.stop, added=True)
+            self.db.upsert_meta(self.bot_id, sym, now, stop, added=True)
         self.db.add_entry(today, self.bot_id)
-        self.db.set_decision_outcome(decision_id, "submitted",
-                                     f"buy {verdict.qty} {sym}, stop {verdict.stop:.2f}")
+        self.db.set_decision_outcome(decision_id, "submitted", f"buy {verdict.qty} {sym}, stop {stop:.2f}")
+
+    def _submit_add(self, sym: str, qty: int, coid: str, stop: float, wait: float = 10.0) -> dict:
+        """Buy more of a held stock, then protect the whole position with one stop.
+
+        Brokers reject a buy while a sell order for the same stock is open (Alpaca calls
+        it a potential wash trade), so the old stop is canceled first and replaced after.
+        """
+        client = self.client
+        tif = self.style.tif
+
+        def held() -> dict:
+            return next((p for p in client.positions() if p["symbol"] == sym), {}) or {}
+
+        def open_sells() -> list:
+            return [o for o in client.open_orders()
+                    if o.get("symbol") == sym and str(o.get("side") or "").lower().startswith("sell") and o.get("id")]
+
+        def protect(tag: str) -> None:
+            pos = held()
+            avail = int(pos.get("qty_available") or pos.get("qty") or 0)
+            if avail <= 0:
+                return
+            try:
+                client.submit_stop(sym, avail, stop, tif, tag)
+            except AlpacaError as exc:  # the stop guard tries again on a later tick
+                log.warning("bot %s: stop for %s after add not placed (%s)", self.bot_id, sym, exc)
+                self.db.add_event(self.bot_id, "error", f"Couldn't re-place the {sym} stop after adding: {exc.message}")
+
+        before = int(held().get("qty") or 0)
+        sells = open_sells()
+        for o in sells:
+            client.cancel_order(o["id"])
+        deadline = time.monotonic() + wait
+        while sells and open_sells() and time.monotonic() < deadline:
+            time.sleep(0.5)  # cancels land asynchronously
+        try:
+            order = client.submit_market(sym, qty, "buy", tif, coid, stop_price=None)
+        except AlpacaError:
+            protect(coid + "-sl0")  # put the protection back before reporting the error
+            raise
+        deadline = time.monotonic() + wait
+        while int(held().get("qty") or 0) < before + qty and time.monotonic() < deadline:
+            time.sleep(0.5)
+        protect(coid + "-sl")
+        return order
 
     def _close(self, sym: str, why: str, decided_by: str | None) -> tuple[bool, str]:
         decision_id = None
@@ -626,7 +747,9 @@ class BotRunner(threading.Thread):
                 self.db.set_decision_outcome(decision_id, "error", exc.message)
             return False, exc.message
         if result is None:  # nothing was held any more (a stop got there first)
-            self.db.delete_meta(self.bot_id, sym)
+            m = self.db.get_meta(self.bot_id).get(sym)
+            if m is not None:
+                self._closed_outside(sym, m)  # still counts for the cooldown and the wash-sale guard
             if decision_id:
                 self.db.set_decision_outcome(decision_id, "held", f"no {sym} position left to close")
             return True, f"no {sym} position left to close"
@@ -641,6 +764,9 @@ class BotRunner(threading.Thread):
     # ---- owner actions --------------------------------------------------
 
     def flatten(self) -> str:
+        return self._owner_action(self._flatten)
+
+    def _flatten(self) -> str:
         if not self.client:
             return "This bot isn't set up."
         held = {p["symbol"]: p for p in self.client.positions()}
@@ -656,11 +782,15 @@ class BotRunner(threading.Thread):
 
     def prepare_move(self) -> str:
         """Pause, close everything at the current broker, and flag the bot as moving."""
+        # Paused first, so a tick waiting on its AI can't buy after this returns.
         self.db.set_paused(self.bot_id, True)
         self.db.set_moving(self.bot_id, True)
+        return self._owner_action(self._prepare_move)
+
+    def _prepare_move(self) -> str:
         self.db.add_event(self.bot_id, "info", f"Owner started moving this bot off {self.broker_label}")
         if self.client and self.client.positions():
-            self.flatten()
+            self._flatten()
             return (f"Paused and closing every position at {self.broker_label}. "
                     "The card shows Ready to move once nothing is left.")
         if self.client:
@@ -685,6 +815,22 @@ def _minutes_until(iso_ts: str | None, now: datetime) -> float | None:
     return (then - now).total_seconds() / 60.0
 
 
+def _parse_ts(value) -> datetime | None:
+    """A broker or database timestamp as an aware datetime (None if it can't be read)."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    s = str(value).strip().replace("Z", "+00:00")
+    # Alpaca sends nanoseconds; Python reads at most microseconds.
+    s = re.sub(r"(\.\d{6})\d+", r"\1", s)
+    try:
+        t = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
 def _parse_t(t) -> datetime:
     if isinstance(t, datetime):
         return t.astimezone(ET)
@@ -699,17 +845,35 @@ class Engine:
         self.db = db
         self.runners: dict[str, BotRunner] = {}
         self.started_at = utcnow()
+        self._lock = threading.Lock()
+        # One lock per bot that outlives restarts: a new loop for a bot can't act
+        # while an old one is still finishing a tick.
+        self._bot_locks: dict[str, threading.RLock] = {}
 
     def start(self, runners: list[BotRunner]) -> None:
-        self.stop()
-        self.runners = {r.bot_id: r for r in runners}
-        for r in runners:
-            r.start()
+        with self._lock:
+            self._stop_all()
+            for r in runners:
+                r._act_lock = self._bot_locks.setdefault(r.bot_id, threading.RLock())
+            self.runners = {r.bot_id: r for r in runners}
+            for r in runners:
+                r.start()
 
     def stop(self) -> None:
-        for r in self.runners.values():
-            r.stop()
+        with self._lock:
+            self._stop_all()
+
+    def _stop_all(self, timeout: float = 30.0) -> None:
+        old = list(self.runners.values())
         self.runners = {}
+        for r in old:
+            r.stop()
+        deadline = time.monotonic() + timeout
+        for r in old:
+            if r.is_alive():
+                r.join(max(0.1, deadline - time.monotonic()))
+            if r.is_alive():
+                log.warning("bot %s loop still finishing; the next loop waits for it", r.bot_id)
 
     def snapshot(self) -> dict:
         bots = [r.snapshot() for r in self.runners.values()]
