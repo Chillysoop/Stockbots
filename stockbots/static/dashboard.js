@@ -412,6 +412,68 @@
     location.href = "/login";
   });
 
+  // ---- backtests -------------------------------------------------------------
+
+  const btBot = document.getElementById("bt-bot");
+  const btMonths = document.getElementById("bt-months");
+  const btStatus = document.getElementById("bt-status");
+  const btGo = document.getElementById("bt-go");
+  let btTimer = null;
+
+  function fillBacktestBots(bots) {
+    const have = [...btBot.options].map((o) => o.value).join(",");
+    const want = bots.map((b) => b.id).join(",");
+    if (have === want) return;
+    const keep = btBot.value;
+    btBot.replaceChildren(...bots.map((b) => h("option", { value: b.id }, b.name)));
+    if (bots.some((b) => b.id === keep)) btBot.value = keep;
+    fillMonths();
+  }
+
+  function fillMonths() {
+    const bot = lastState && lastState.bots.find((b) => b.id === btBot.value);
+    const intraday = bot && bot.style === "momentum";
+    const options = intraday ? [[3, "3 months"], [6, "6 months"], [12, "12 months"]] : [[12, "1 year"], [24, "2 years"], [36, "3 years"]];
+    btMonths.replaceChildren(...options.map(([v, t]) => h("option", { value: v }, t)));
+    btMonths.value = intraday ? "6" : "24";
+  }
+  btBot.addEventListener("change", fillMonths);
+
+  async function loadBacktests() {
+    let data;
+    try { data = await api("/api/backtests"); } catch (e) { return; }
+    const run = data.running;
+    btGo.disabled = !!run;
+    btStatus.textContent = run ? `${run.name}: ${run.status}…` : "";
+    const list = document.getElementById("bt-list");
+    if (!data.reports.length) {
+      list.replaceChildren(h("li", {}, "No backtests yet. A 2-year run takes about a minute."));
+    } else {
+      list.replaceChildren(...data.reports.map((r) => {
+        if (!r.ok) return h("li", { class: "error" }, `${r.name}, ${r.months} months: failed. ${r.error || ""}`);
+        const vs = r.return_pct - r.spy_return_pct;
+        return h("li", {},
+          h("a", { href: `/backtests/${encodeURIComponent(r.id)}` }, `${r.name}, ${r.start} to ${r.end}`),
+          `: ${pct(r.return_pct, 1)} vs SPY ${pct(r.spy_return_pct, 1)} (${vs >= 0 ? "ahead" : "behind"} by ${Math.abs(vs).toFixed(1)} points), worst drop ${pct(r.max_drawdown_pct, 1)}.`);
+      }));
+    }
+    clearTimeout(btTimer);
+    btTimer = run ? setTimeout(loadBacktests, 3000) : null;  // poll quickly only while one is running
+  }
+
+  document.getElementById("bt-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    btGo.disabled = true;
+    try {
+      await api("/api/backtests", { method: "POST", body: { bot: btBot.value, months: Number(btMonths.value) } });
+      btStatus.textContent = "Starting…";
+      loadBacktests();
+    } catch (e) {
+      btGo.disabled = false;
+      toast(e.message);
+    }
+  });
+
   // ---- loop -----------------------------------------------------------------
 
   async function refresh() {
@@ -424,6 +486,8 @@
       renderLanes(ranked);
       renderDecisions(state.decisions || [], state.bots);
       renderEvents(state.events || [], state.bots);
+      fillBacktestBots(state.bots);
+      if (!btTimer) loadBacktests();
     } catch (e) {
       if (e.message !== "logged out") document.getElementById("market").textContent = "Can't reach the server. Retrying…";
     }

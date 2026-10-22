@@ -78,6 +78,17 @@ Then open `http://<your-server-ip>/`.
 - **Decisions:** every real choice, who made it (Jev shows its confidence), and whether the order went through or the risk layer blocked it.
 - **Change keys or add a bot** stops the bots and reopens Setup. Positions and their stops stay at Alpaca.
 
+## Backtests
+
+On the dashboard, **Backtests** replays a bot's rules on past prices (downloaded with that bot's Alpaca paper keys) and compares 48 combinations of position size (10–25%), daily loss stop (off, 2, 3, 5%) and stop distance (0.75x, 1x, 1.5x the normal one). A two-year run of a swing bot takes about a minute; the momentum bot uses 5-minute prices, so keep it to a few months. Reports stay in `/data/backtests`.
+
+How to read one:
+- **It tests the rules, not the AI.** Asking an AI about past prices leaks hindsight (it has read the news), so a code chooser takes every setup the rules rank highest. The live bot's AI may skip some.
+- **Use the test period.** Settings are ranked on the first 70% of the period; the last 30% is the honest check. A setting that only shines in the first part is probably luck.
+- **It's optimistic.** Today's big stocks are used throughout (survivorship bias), swing bots decide once a day at the close, and fills assume small slippage.
+
+From the server instead: `docker compose exec app python -m stockbots.backtest --bot jev --months 24`.
+
 ## Settings
 
 Most people need none. To change one, add it as an environment variable in Docker Manager (or a `.env` file next to `docker-compose.yml`) and redeploy.

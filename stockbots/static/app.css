@@ -242,6 +242,15 @@ ol.decisions time, ul.events time { color: var(--ink-3); font-size: 13px; }
 ul.events li { padding: 7px 0; border-top: 1px solid var(--surface-2); font-size: 13.5px; }
 ul.events li.error { color: var(--loss); }
 
+.backtests { margin: 0 0 30px; }
+.bt-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin: 4px 0 10px; }
+.bt-form label { font-size: 14px; font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.bt-form select {
+  font: inherit; font-size: 14px; color: var(--ink); background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 8px;
+}
+ul.events li a { font-weight: 650; }
+
 .toast {
   position: fixed;
   left: 50%;

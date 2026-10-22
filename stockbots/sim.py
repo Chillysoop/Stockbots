@@ -242,7 +242,7 @@ class SimAlpaca:
             eq.append(round(self._equity(), 2))
             return {"timestamp": ts, "equity": eq, "base_value": base}
 
-    def bars(self, symbols, timeframe, start, end=None, feed="iex"):
+    def bars(self, symbols, timeframe, start, end=None, feed="iex", **_):
         with self.lock:
             if timeframe == "1Day":
                 return {s: list(self.m.daily.get(s, [])) for s in symbols}

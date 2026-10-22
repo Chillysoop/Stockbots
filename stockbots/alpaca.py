@@ -280,20 +280,22 @@ class AlpacaClient:
         start: datetime,
         end: datetime | None = None,
         feed: str = "iex",
+        adjustment: str = "split",
+        max_pages: int = 20,
     ) -> dict[str, list[dict]]:
         params: dict[str, Any] = {
             "symbols": ",".join(symbols),
             "timeframe": timeframe,
             "start": iso(start),
             "limit": 10000,
-            "adjustment": "split",
+            "adjustment": adjustment,
             "feed": feed,
             "sort": "asc",
         }
         if end is not None:
             params["end"] = iso(end)
         out: dict[str, list[dict]] = {s: [] for s in symbols}
-        for _ in range(20):  # pages
+        for _ in range(max_pages):  # pages
             data = self._get("/v2/stocks/bars", params=params, data_api=True) or {}
             for sym, rows in (data.get("bars") or {}).items():
                 out.setdefault(sym, []).extend(rows or [])

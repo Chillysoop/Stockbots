@@ -46,7 +46,9 @@ class WebTests(unittest.TestCase):
                 raise AlpacaError(401, "unauthorized")
             return {"account_number": key.split("-")[0]}
 
-        web = create_web(cls.app, alpaca_check=alpaca_check)
+        from .test_backtest import FakeHistory
+
+        web = create_web(cls.app, alpaca_check=alpaca_check, data_factory=lambda k, s: FakeHistory())
         cls.port = free_port()
         cls.server = uvicorn.Server(uvicorn.Config(web, host="127.0.0.1", port=cls.port, log_level="error"))
         cls.thread = threading.Thread(target=cls.server.run, daemon=True)
@@ -154,6 +156,23 @@ class WebTests(unittest.TestCase):
         page = s.get(self.base + "/")
         self.assertIn("Stockbots", page.text)
         self.assertEqual(page.headers.get("x-frame-options"), "DENY")
+
+        # Backtests: start one from the dashboard API and open its report
+        self.assertEqual(requests.get(self.base + "/api/backtests").status_code, 401)
+        r = s.post(self.base + "/api/backtests", headers=H, json={"bot": "jev", "months": 6})
+        self.assertTrue(r.json()["ok"], r.text)
+        self.assertEqual(s.post(self.base + "/api/backtests", headers=H, json={"bot": "jev", "months": 99}).status_code, 400)
+        for _ in range(300):
+            listing = s.get(self.base + "/api/backtests").json()
+            if not listing["running"] and listing["reports"]:
+                break
+            time.sleep(0.2)
+        report = listing["reports"][0]
+        self.assertTrue(report["ok"], report)
+        page = s.get(self.base + f"/backtests/{report['id']}")
+        self.assertIn("SPY", page.text)
+        self.assertEqual(requests.get(self.base + f"/backtests/{report['id']}", allow_redirects=False).status_code, 302)
+        self.assertEqual(s.get(self.base + "/backtests/..%2Fsettings").status_code, 404)
 
         # The owner can reopen Setup and come back with just one bot
         self.assertEqual(requests.post(self.base + "/api/setup/reopen", headers=H, json={}).status_code, 401)

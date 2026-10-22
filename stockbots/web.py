@@ -31,7 +31,7 @@ def json_error(message: str, status: int = 400, **extra) -> JSONResponse:
     return JSONResponse({"ok": False, "error": message, **extra}, status_code=status)
 
 
-def create_web(app: App, alpaca_check=None) -> Starlette:
+def create_web(app: App, alpaca_check=None, data_factory=None) -> Starlette:
     failed_logins: list[float] = []
 
     def logged_in(request: Request) -> bool:
@@ -283,6 +283,53 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
             return JSONResponse({"ok": True, "rules": runner.rules()})
         return json_error("Unknown action.", 404)
 
+    # ---- backtests ------------------------------------------------------
+
+    async def backtests_list(request: Request):
+        bad = require_owner(request)
+        if bad:
+            return bad
+        return JSONResponse(app.backtests.list(), headers={"Cache-Control": "no-store"})
+
+    async def backtests_start(request: Request):
+        bad = require_owner(request)
+        if bad:
+            return bad
+        try:
+            body = await request.json()
+        except ValueError:
+            return json_error("Bad request.")
+        bot_id = str(body.get("bot") or "")
+        if bot_id not in BOT_IDS:
+            return json_error("Unknown bot.", 404)
+        try:
+            months = int(body.get("months") or 24)
+        except (TypeError, ValueError):
+            return json_error("Pick a period.")
+        if not 1 <= months <= 36:
+            return json_error("Pick a period between 1 and 36 months.")
+        keys = app.settings.bot(bot_id)
+        if not keys.get("alpaca_key") or not keys.get("alpaca_secret"):
+            return json_error("This bot needs its Alpaca paper keys (from Setup) to download past prices.")
+        runner = app.engine.runners.get(bot_id)
+        name = runner.display_name if runner else bot_id
+        factory = data_factory or (app.client_factory if app.custom_clients
+                                   else (lambda k, s: AlpacaClient(k, s, live=False)))
+        data_client = factory(keys["alpaca_key"], keys["alpaca_secret"])
+        try:
+            job = app.backtests.start(bot_id, months, data_client, name)
+        except RuntimeError as exc:
+            return json_error(str(exc), 409)
+        return JSONResponse({"ok": True, "id": job})
+
+    async def backtest_report(request: Request):
+        if not logged_in(request):
+            return RedirectResponse("/login", status_code=302)
+        path = app.backtests.report_path(request.path_params["job_id"])
+        if not path:
+            return PlainTextResponse("Report not found", status_code=404)
+        return FileResponse(path, media_type="text/html", headers={"Cache-Control": "no-store"})
+
     routes = [
         Route("/", index),
         Route("/setup", setup_page),
@@ -296,6 +343,9 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
         Route("/api/logout", logout, methods=["POST"]),
         Route("/api/state", state),
         Route("/api/bots/{bot_id}/{action}", bot_action, methods=["POST"]),
+        Route("/api/backtests", backtests_list, methods=["GET"]),
+        Route("/api/backtests", backtests_start, methods=["POST"]),
+        Route("/backtests/{job_id}", backtest_report),
     ]
     return SecurityHeaders(Starlette(routes=routes))
 

@@ -44,6 +44,18 @@
       </div>
     </section>
 
+    <section class="panel backtests" aria-labelledby="bt-title">
+      <h2 id="bt-title">Backtests</h2>
+      <p class="sub">Replay a bot's rules on past prices and compare position sizes, loss stops and stop distances. It uses the rules without the AI, so it shows the rules' edge, not the AI's.</p>
+      <form id="bt-form" class="bt-form">
+        <label>Bot <select name="bot" id="bt-bot"></select></label>
+        <label>Period <select name="months" id="bt-months"></select></label>
+        <button class="btn primary" type="submit" id="bt-go">Run backtest</button>
+        <span class="market" id="bt-status" role="status"></span>
+      </form>
+      <ul class="events" id="bt-list"></ul>
+    </section>
+
     <footer class="note">
       <p>Paper trading uses simulated money at real prices unless you deliberately switch to live. Not financial advice.</p>
       <button class="btn quiet" id="reopen" type="button">Change keys or add a bot</button>

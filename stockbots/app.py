@@ -7,6 +7,7 @@ import time
 
 from . import brokers
 from .alpaca import AlpacaClient
+from .backtest import BacktestJobs
 from .brains import make_brain
 from .config import BOTS, Config
 from .db import DB
@@ -25,6 +26,7 @@ class App:
         self.db = DB(cfg.db_path)
         self.settings = SettingsStore(cfg.settings_path)
         self.engine = Engine(cfg, self.db)
+        self.backtests = BacktestJobs(cfg)
         self.started = time.time()
         self.custom_clients = client_factory is not None  # tests and the demo bring pretend accounts
         self.client_factory = client_factory or (lambda key, secret: AlpacaClient(key, secret, live=False))
