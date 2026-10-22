@@ -40,3 +40,15 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+      - name: Check the image is public (Hostinger pulls it without logging in)
+        run: |
+          repo="${IMAGE#ghcr.io/}"
+          token=$(curl -s "https://ghcr.io/token?scope=repository:${repo}:pull" | python3 -c "import json,sys; print(json.load(sys.stdin).get('token',''))")
+          code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+            "https://ghcr.io/v2/${repo}/manifests/latest")
+          if [ "$code" = "200" ]; then
+            echo "Image is public: ${IMAGE}:latest"
+          else
+            echo "::warning title=Image is private::Make it public so servers can pull it: GitHub > your profile > Packages > $(basename "$repo") > Package settings > Change visibility > Public."
+          fi
