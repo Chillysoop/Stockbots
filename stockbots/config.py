@@ -71,6 +71,17 @@ class Config:
         self.entry_start_et = env("ENTRY_START_ET", "09:35")
         self.entry_end_et = env("ENTRY_END_ET", "15:45")
         self.fallback_opens_trades = env_bool("FALLBACK_OPENS_TRADES", False)
+
+        # Wash-sale guard across every bot and broker this server runs.
+        # auto = on for real money, off on paper (paper trades aren't taxed).
+        mode = (env("WASH_SALE_GUARD", "auto") or "auto").lower()
+        self.wash_sale_guard = mode == "on" or (mode == "auto" and self.live)
+        groups = env("WASH_SALE_GROUPS", "SPY,VOO,IVV,SPLG;QQQ,QQQM;GOOGL,GOOG;BRK.B,BRK.A")
+        self.equivalents: dict[str, set[str]] = {}
+        for group in (groups or "").split(";"):
+            members = {s.strip().upper() for s in group.split(",") if s.strip()}
+            for s in members:
+                self.equivalents[s] = members
         self.max_menu_entries = env_int("MAX_MENU_ENTRIES", 4)
 
         # Model spending (per bot, per day, as this app counts it)
@@ -105,6 +116,10 @@ class Config:
         ):
             if price <= 0:
                 raise SystemExit("Model prices must be above 0 so the spending cap works.")
+
+    def same_as(self, symbol: str) -> set[str]:
+        """The symbol plus any funds the wash-sale guard treats as identical to it."""
+        return self.equivalents.get(symbol.upper(), {symbol.upper()})
 
     def provider_model(self, provider: str) -> str:
         return {

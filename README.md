@@ -71,7 +71,7 @@ Then open `http://<your-server-ip>/`.
 
 ## The dashboard
 
-- **The race:** each bot's return over the past month, with the leader on top.
+- **The race:** each bot's return since it started, with the leader on top.
 - **Each bot:** account value, today's change, what it holds (with each stop), whether its AI or the code is making calls, AI cost today, and trades used today.
 - **Pause** stops new trades (stops stay in place). **Close all positions** sells everything at market.
 - **Trading rules:** the plain-English rules each AI reads with every decision. Edit them from the dashboard; sizes, stops and limits stay in code.
@@ -107,12 +107,34 @@ Model prices used for the spending cap can be changed with `JEV_USD_PER_MTOK`, `
 
 ## Real money (read this twice)
 
-There is no button for it. Live trading needs **all** of these, set by hand on the server:
+There is no button for it. Everything below is a server variable (Docker Manager, or `.env` next to `docker-compose.yml`), set by hand, on purpose.
 
-- `MODE=live` and `LIVE_ACK=I-ACCEPT-REAL-MONEY-RISK`
-- Live Alpaca keys for each bot, given as `ALPACA_KEY_CLAUDE`, `ALPACA_SECRET_CLAUDE`, `ALPACA_KEY_JEV`, `ALPACA_SECRET_JEV`, `ALPACA_KEY_OPENAI`, `ALPACA_SECRET_OPENAI` (or through Setup after a reset)
+**1. Turn on live mode for the whole server:** `MODE=live` and `LIVE_ACK=I-ACCEPT-REAL-MONEY-RISK`. With either missing, everything stays on paper.
 
-Alpaca lets one person have one live account, so three live bots would share it and could collide. Run them on paper. Again: this is not financial advice, and you can lose money.
+**2. Give each bot its own real-money broker.** Each needs its own account, because Alpaca has allowed one live account per person so far:
+
+| Broker | Set | Notes |
+|---|---|---|
+| Alpaca | `LIVE_BROKER_<BOT>=alpaca`, `ALPACA_LIVE_KEY_<BOT>`, `ALPACA_LIVE_SECRET_<BOT>` | Live keys from your live account (later: a live sub-account) |
+| Tradier | `LIVE_BROKER_<BOT>=tradier`, `TRADIER_TOKEN_<BOT>`, optional `TRADIER_ACCOUNT_<BOT>` | API token from dash.tradier.com/settings/api. No extended hours |
+| Public | `LIVE_BROKER_<BOT>=public`, `PUBLIC_SECRET_<BOT>`, optional `PUBLIC_ACCOUNT_<BOT>` | Secret key from Public's settings (API section). **No sandbox**: start small |
+| none | `LIVE_BROKER_<BOT>=off` | The bot sits out |
+
+`<BOT>` is `CLAUDE`, `JEV` or `OPENAI`. The bots keep using their Alpaca paper keys from Setup for market data, so every bot sees the same prices whatever broker holds its money. Tradier and Public get their protective stop as a separate order a few seconds after each buy fills; if that ever fails, the stop guard places it on the next minute.
+
+**Test Tradier with fake money first:** on paper, set `PAPER_BROKER_<BOT>=tradier` and `TRADIER_SANDBOX_TOKEN_<BOT>` (Tradier's sandbox token). That bot then paper trades on Tradier's sandbox instead of Alpaca.
+
+**Wash-sale guard:** on by default in live mode (`WASH_SALE_GUARD=auto`). Across every bot and broker on this server: after any bot sells a stock at a loss, no bot buys it again for 31 days; no two bots hold the same stock; and a bot won't buy a stock another bot bought in the last 30 days. `WASH_SALE_GROUPS` lists funds treated as identical (SPY, VOO, IVV and SPLG by default). It can't see your other accounts (an IRA, Robinhood, a spouse's), so buys there still count. It lowers the risk; it isn't tax advice, so keep your own records.
+
+### Moving a bot to another broker (for example, onto Alpaca live sub-accounts)
+
+1. On the dashboard, press **Prepare to move broker** on that bot. It pauses, sells everything at its current broker, cancels its orders, and shows **Ready to move** once nothing is left.
+2. In Docker Manager, change `LIVE_BROKER_<BOT>` and paste the new broker's keys (for Alpaca: `ALPACA_LIVE_KEY_<BOT>` and `ALPACA_LIVE_SECRET_<BOT>` from that bot's sub-account). Redeploy.
+3. The bot comes back on the new broker, still paused. Check its balance on the dashboard, then press **Resume**.
+
+The race chart keeps going: the app records each bot's return day by day within each account and chains them, so a different balance at the new broker doesn't break the line. Move money between brokers yourself; the bots never withdraw or transfer.
+
+Again: this is not financial advice, and you can lose money.
 
 ## Develop
 

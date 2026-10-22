@@ -5,6 +5,7 @@ import logging
 import os
 import time
 
+from . import brokers
 from .alpaca import AlpacaClient
 from .brains import make_brain
 from .config import BOTS, Config
@@ -25,7 +26,8 @@ class App:
         self.settings = SettingsStore(cfg.settings_path)
         self.engine = Engine(cfg, self.db)
         self.started = time.time()
-        self.client_factory = client_factory or (lambda key, secret: AlpacaClient(key, secret, live=cfg.live))
+        self.custom_clients = client_factory is not None  # tests and the demo bring pretend accounts
+        self.client_factory = client_factory or (lambda key, secret: AlpacaClient(key, secret, live=False))
         self.brain_factory = brain_factory or make_brain
         self.now_fn = now_fn
         if cfg.mode == "live" and not cfg.live:
@@ -48,14 +50,22 @@ class App:
         runners = []
         for bot in BOTS:
             b = self.settings.bot(bot["id"])
-            client = None
             enabled = b.get("enabled", True) is not False
-            if enabled and b.get("alpaca_key") and b.get("alpaca_secret"):
-                client = self.client_factory(b["alpaca_key"], b["alpaca_secret"])
+            if self.custom_clients:
+                client = None
+                if enabled and b.get("alpaca_key") and b.get("alpaca_secret"):
+                    client = self.client_factory(b["alpaca_key"], b["alpaca_secret"])
+                choice = brokers.BrokerChoice(client, "alpaca" if client else "off",
+                                              "Alpaca paper" if client else "Off")
+            else:
+                choice = brokers.choose(bot["id"], self.cfg, b, enabled)
+            if choice.problem:
+                log.warning("Bot %s can't run on %s: %s", bot["id"], choice.label, choice.problem)
             ai_key = self.settings.key(PROVIDER_KEY[bot["provider"]])
             brain = self.brain_factory(bot["provider"], self.cfg, ai_key)
             name = (b.get("name") or "").strip() or bot["default_name"]
-            runners.append(BotRunner(bot, self.cfg, self.db, client, brain, name, now_fn=self.now_fn))
+            runners.append(BotRunner(bot, self.cfg, self.db, choice.client, brain, name, now_fn=self.now_fn,
+                                     broker=choice.broker, broker_label=choice.label, problem=choice.problem))
         self.engine.start(runners)
         log.info("Started %d bots (%s mode)", len([r for r in runners if r.client]),
                  "LIVE" if self.cfg.live else "paper")

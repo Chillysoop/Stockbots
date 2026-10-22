@@ -56,7 +56,8 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
     def check_alpaca(key: str, secret: str) -> dict:
         if alpaca_check:
             return alpaca_check(key, secret)
-        return AlpacaClient(key, secret, live=app.cfg.live).account()
+        # Setup always takes paper keys: they run the paper bots and feed market data.
+        return AlpacaClient(key, secret, live=False).account()
 
     # ---- pages ----------------------------------------------------------
 
@@ -254,8 +255,15 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
             return JSONResponse({"ok": True, "message": "Paused: no new trades. Stops stay in place."})
         if action == "resume":
             app.db.set_paused(bot_id, False)
-            app.db.add_event(bot_id, "info", "Owner resumed the bot")
-            return JSONResponse({"ok": True, "message": "Resumed."})
+            runner.finish_move()
+            app.db.add_event(bot_id, "info", f"Owner resumed the bot on {runner.broker_label}")
+            return JSONResponse({"ok": True, "message": f"Resumed on {runner.broker_label}."})
+        if action == "prepare-move":
+            try:
+                msg = await run_in_threadpool(runner.prepare_move)
+            except AlpacaError as exc:
+                return json_error(f"{runner.broker_label}: {exc.message}", 502)
+            return JSONResponse({"ok": True, "message": msg})
         if action == "flatten":
             try:
                 msg = await run_in_threadpool(runner.flatten)

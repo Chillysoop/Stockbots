@@ -77,6 +77,22 @@ CREATE TABLE IF NOT EXISTS bot_state (
     rules TEXT
 );
 
+CREATE TABLE IF NOT EXISTS equity_daily (
+    bot TEXT NOT NULL,
+    day TEXT NOT NULL,
+    account_ref TEXT NOT NULL,     -- broker + account, so a broker switch starts a new segment
+    start REAL NOT NULL,
+    last REAL NOT NULL,
+    updated TEXT NOT NULL,
+    PRIMARY KEY (bot, day, account_ref)
+);
+
+CREATE TABLE IF NOT EXISTS loss_sales (
+    bot TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    ts TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
@@ -100,6 +116,9 @@ class DB:
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.executescript(SCHEMA)
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(bot_state)").fetchall()}
+            if "moving" not in cols:  # added after the first release
+                self.conn.execute("ALTER TABLE bot_state ADD COLUMN moving INTEGER NOT NULL DEFAULT 0")
             self.conn.commit()
 
     def _exec(self, sql: str, args: tuple = ()) -> sqlite3.Cursor:
@@ -204,8 +223,46 @@ class DB:
     # ---- bot state ------------------------------------------------------
 
     def bot_state(self, bot: str) -> dict:
-        row = self._one("SELECT paused, rules FROM bot_state WHERE bot=?", (bot,))
-        return row or {"paused": 0, "rules": None}
+        row = self._one("SELECT paused, rules, moving FROM bot_state WHERE bot=?", (bot,))
+        return row or {"paused": 0, "rules": None, "moving": 0}
+
+    def set_moving(self, bot: str, moving: bool) -> None:
+        self._exec(
+            "INSERT INTO bot_state (bot, moving) VALUES (?,?) ON CONFLICT(bot) DO UPDATE SET moving=excluded.moving",
+            (bot, 1 if moving else 0),
+        )
+
+    # ---- the bots' own equity record (works across brokers) -------------
+
+    def note_equity(self, bot: str, day: str, account_ref: str, equity: float) -> None:
+        if equity <= 0:
+            return
+        self._exec(
+            "INSERT INTO equity_daily (bot, day, account_ref, start, last, updated) VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(bot, day, account_ref) DO UPDATE SET last=excluded.last, updated=excluded.updated",
+            (bot, day, account_ref, equity, equity, now_iso()),
+        )
+
+    def equity_rows(self, bot: str) -> list[dict]:
+        return self._all("SELECT * FROM equity_daily WHERE bot=? ORDER BY day, rowid", (bot,))
+
+    # ---- wash-sale guard ------------------------------------------------
+
+    def record_loss_sale(self, bot: str, symbol: str) -> None:
+        self._exec("INSERT INTO loss_sales (bot, symbol, ts) VALUES (?,?,?)", (bot, symbol, now_iso()))
+
+    def loss_sales_since(self, since_iso: str) -> list[dict]:
+        return self._all("SELECT bot, symbol, ts FROM loss_sales WHERE ts >= ? ORDER BY ts DESC", (since_iso,))
+
+    def buys_since(self, since_iso: str) -> list[dict]:
+        return self._all(
+            "SELECT bot, symbol, ts FROM orders WHERE side='buy' AND kind IN ('open','add') AND error IS NULL"
+            " AND ts >= ? ORDER BY ts DESC",
+            (since_iso,),
+        )
+
+    def holdings_by_other_bots(self, bot: str) -> list[dict]:
+        return self._all("SELECT bot, symbol FROM position_meta WHERE bot != ?", (bot,))
 
     def set_paused(self, bot: str, paused: bool) -> None:
         self._exec(

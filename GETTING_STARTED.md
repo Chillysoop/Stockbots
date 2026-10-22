@@ -79,7 +79,7 @@ Without a domain, your browser talks to the server over plain HTTP. To add HTTPS
 
 ## Reading the dashboard
 
-- **The race chart:** each bot's return over the past month, leader first.
+- **The race chart:** each bot's return since it started, leader first. It fills in day by day.
 - **Bot cards:** account value, today's change, what it holds and where each stop is, and whether its AI is making the calls.
 - **Decisions:** every real choice a bot made, which AI made it, and whether the order went through or the safety rules blocked it.
 - **Pause** stops new trades. **Close all positions** sells everything now. **Change keys or add a bot** reopens Setup.

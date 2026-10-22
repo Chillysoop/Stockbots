@@ -73,22 +73,10 @@
 
   // ---- numbers per bot --------------------------------------------------
 
+  // The server keeps each bot's return day by day, across brokers.
   function series(bot) {
-    const hist = bot.history || {};
-    const pts = [];
-    (hist.timestamp || []).forEach((t, i) => {
-      const e = (hist.equity || [])[i];
-      if (e && e > 0) pts.push([t * 1000, e]);
-    });
-    const eq = bot.account && bot.account.equity;
-    if (eq && eq > 0) {
-      const now = Date.now();
-      if (!pts.length || now - pts[pts.length - 1][0] > 60000) pts.push([now, eq]);
-      else pts[pts.length - 1][1] = eq;
-    }
-    if (!pts.length) return [];
-    const base = pts[0][1];
-    return pts.map(([t, e]) => [t, (e / base - 1) * 100]);
+    const race = bot.race || {};
+    return (race.timestamp || []).map((t, i) => [t * 1000, (race.return_pct || [])[i] || 0]);
   }
 
   function returnPct(bot) {
@@ -138,7 +126,7 @@
     } else {
       const gap = ranked.length > 1 && ranked[1].r !== null ? leader.r - ranked[1].r : null;
       title.textContent = `${leader.b.name} leads, ${pct(leader.r)}`;
-      sub.textContent = gap !== null ? `${gap.toFixed(2)} points ahead of ${ranked[1].b.name}. Returns over the past month.` : "Returns over the past month.";
+      sub.textContent = gap !== null ? `${gap.toFixed(2)} points ahead of ${ranked[1].b.name}. Returns since each bot started.` : "Returns since each bot started.";
     }
     chart.replaceChildren();
     if (!withData.length) {
@@ -222,6 +210,8 @@
     refs.positions = h("div", {});
     refs.pause = h("button", { class: "btn", type: "button", onclick: () => togglePause(bot.id) });
     refs.flatten = h("button", { class: "btn danger", type: "button", onclick: () => flatten(bot.id) }, "Close all positions");
+    refs.move = h("button", { class: "btn quiet", type: "button", onclick: () => prepareMove(bot.id) }, "Prepare to move broker");
+    refs.moveNote = h("div", { class: "lane-section move-note", hidden: true });
     refs.rulesText = h("textarea", { "aria-label": `Rules for ${bot.name}`, maxlength: 1500 });
     refs.rulesSave = h("button", { class: "btn primary", type: "button", onclick: () => saveRules(bot.id) }, "Save rules");
     refs.rulesReset = h("button", { class: "btn quiet", type: "button", onclick: () => saveRules(bot.id, true) }, "Use the default rules");
@@ -236,11 +226,12 @@
         h("div", { class: "figures" },
           h("div", { class: "figure" }, refs.equity, h("div", { class: "label" }, "Account value")),
           h("div", { class: "figure" }, refs.today, h("div", { class: "label" }, "Today")),
-          h("div", { class: "figure" }, refs.ret, h("div", { class: "label" }, "Past month"))),
+          h("div", { class: "figure" }, refs.ret, h("div", { class: "label" }, "Since start"))),
         refs.status),
+      refs.moveNote,
       h("div", { class: "lane-section" }, h("h4", {}, "Holding"), refs.positions),
       h("div", { class: "lane-section" }, refs.details),
-      h("div", { class: "controls" }, refs.pause, refs.flatten));
+      h("div", { class: "controls" }, refs.pause, refs.flatten, refs.move));
     refs.rulesText.value = bot.rules || "";
     refs.rulesDirty = false;
     refs.rulesText.addEventListener("input", () => (refs.rulesDirty = true));
@@ -258,7 +249,18 @@
       refs.rank.textContent = r === null ? "" : String(i + 1);
       refs.rank.setAttribute("aria-label", r === null ? "" : `Rank ${i + 1}`);
       refs.name.textContent = b.name;
-      refs.who.textContent = `${b.ai_label} (${b.model}), ${b.style_label.toLowerCase()}`;
+      refs.who.textContent = `${b.ai_label} (${b.model}), ${b.style_label.toLowerCase()}, on ${b.broker_label}`;
+      const showMove = lastState && (lastState.mode === "live" || b.broker !== "alpaca");
+      refs.move.hidden = !showMove || b.moving;
+      refs.moveNote.hidden = !b.moving;
+      if (b.moving) {
+        const envName = `LIVE_BROKER_${b.id.toUpperCase()}`;
+        refs.moveNote.replaceChildren(
+          h("h4", {}, b.ready_to_move ? "Ready to move" : "Closing positions before the move…"),
+          h("p", { class: "none" }, b.ready_to_move
+            ? `Nothing is held at ${b.broker_label}. In Docker Manager, set ${envName} and the new broker's keys, redeploy, check the new balance here, then press Resume.`
+            : `Waiting for ${b.broker_label} to finish closing positions and canceling orders.`));
+      }
       const acct = b.account || {};
       refs.equity.textContent = money(acct.equity);
       refs.today.textContent = pct(acct.day_pl_pct);
@@ -269,6 +271,7 @@
       const status = [];
       const running = b.status === "running";
       status.push(h("div", {}, h("span", { class: "dot " + (b.paused ? "off" : running ? "on" : "off") }),
+        b.problem ? `Can't run on ${b.broker_label}: ${b.problem}` :
         b.paused ? "Paused: no new trades. Its stops stay in place." :
         running ? (b.entry_blocker ? `Running, not buying: ${b.entry_blocker}` : "Running, looking for trades") :
         `${b.status}${b.status_detail ? ": " + b.status_detail : ""}`));
@@ -366,6 +369,17 @@
     if (!confirm(`Close every ${bot.name} position at market price now?`)) return;
     try {
       const r = await api(`/api/bots/${id}/flatten`, { method: "POST", body: {} });
+      toast(r.message);
+      refresh();
+    } catch (e) { toast(e.message); }
+  }
+
+  async function prepareMove(id) {
+    const bot = lastState && lastState.bots.find((b) => b.id === id);
+    if (!bot) return;
+    if (!confirm(`Move ${bot.name} off ${bot.broker_label}? It pauses and sells every position there at market price now.`)) return;
+    try {
+      const r = await api(`/api/bots/${id}/prepare-move`, { method: "POST", body: {} });
       toast(r.message);
       refresh();
     } catch (e) { toast(e.message); }

@@ -41,6 +41,9 @@ class BotRunner(threading.Thread):
         brain: Brain | None,
         name: str,
         now_fn=utcnow,
+        broker: str = "alpaca",
+        broker_label: str = "Alpaca paper",
+        problem: str | None = None,
     ):
         super().__init__(name=f"bot-{bot['id']}", daemon=True)
         self.bot = bot
@@ -50,6 +53,10 @@ class BotRunner(threading.Thread):
         self.client = client
         self.brain = brain
         self.display_name = name
+        self.broker = broker
+        self.broker_label = broker_label
+        self.problem = problem
+        self._last_positions: dict = {}
         self.style = STYLES[bot["style"]]
         self.now_fn = now_fn
         self._stop = threading.Event()
@@ -64,7 +71,8 @@ class BotRunner(threading.Thread):
         self._seen_positions: set[str] = set()
         self.state: dict = {
             "status": "starting" if client else "off",
-            "status_detail": "",
+            "status_detail": problem or "",
+            "open_orders": 0,
             "account": None,
             "positions": [],
             "clock": None,
@@ -104,10 +112,19 @@ class BotRunner(threading.Thread):
         st = self.db.bot_state(self.bot_id)
         day = self.now_fn().astimezone(ET).date().isoformat()
         spend = self.db.spend_today(day, self.bot_id)
+        moving = bool(st.get("moving"))
+        flat = not state.get("positions") and not state.get("open_orders")
         return {
             "id": self.bot_id,
             "name": self.display_name,
-            "enabled": self.client is not None,
+            "enabled": self.client is not None or bool(self.problem),
+            "broker": self.broker,
+            "broker_label": self.broker_label,
+            "problem": self.problem,
+            "moving": moving,
+            "ready_to_move": moving and flat and state.get("account") is not None,
+            "race": self.race_series(),
+            "wash_sale_guard": self.cfg.wash_sale_guard,
             "ai_label": self.bot["ai_label"],
             "provider": self.bot["provider"],
             "model": self.cfg.provider_model(self.bot["provider"]),
@@ -130,6 +147,74 @@ class BotRunner(threading.Thread):
         st = self.db.bot_state(self.bot_id)
         return (st.get("rules") or "").strip() or self.style.default_rules
 
+    def race_series(self) -> dict:
+        """The bot's return since it started, chained day by day.
+
+        Each day's return is measured within one account, so moving a bot to a
+        different broker (with a different balance) doesn't break its line.
+        """
+        rows = self.db.equity_rows(self.bot_id)
+        if not rows:
+            return {"timestamp": [], "return_pct": []}
+        today = self.now_fn().astimezone(ET).date().isoformat()
+        index = 1.0
+        last_by_ref: dict[str, float] = {}
+        first = datetime.fromisoformat(rows[0]["day"]).replace(hour=9, minute=30, tzinfo=ET)
+        ts = [int(first.timestamp())]
+        pct = [0.0]
+        by_day: dict[str, list[dict]] = {}
+        for r in rows:
+            by_day.setdefault(r["day"], []).append(r)
+        for day in sorted(by_day):
+            for r in by_day[day]:
+                base = last_by_ref.get(r["account_ref"]) or r["start"]
+                if base > 0:
+                    index *= r["last"] / base
+                last_by_ref[r["account_ref"]] = r["last"]
+            if day == today:
+                stamp = int(self.now_fn().timestamp())
+            else:
+                stamp = int(datetime.fromisoformat(day).replace(hour=16, tzinfo=ET).timestamp())
+            ts.append(stamp)
+            pct.append(round((index - 1.0) * 100.0, 4))
+        return {"timestamp": ts, "return_pct": pct}
+
+    def wash_blocks(self, symbols, now: datetime) -> tuple[dict, dict]:
+        """Which buys could cause a wash sale, across every bot and broker on this server."""
+        if not self.cfg.wash_sale_guard:
+            return {}, {}
+        since31 = (now - timedelta(days=31)).isoformat(timespec="seconds")
+        since30 = (now - timedelta(days=30)).isoformat(timespec="seconds")
+        losses = self.db.loss_sales_since(since31)
+        buys = [b for b in self.db.buys_since(since30) if b["bot"] != self.bot_id]
+        held = self.db.holdings_by_other_bots(self.bot_id)
+        opens: dict[str, str] = {}
+        adds: dict[str, str] = {}
+        for sym in symbols:
+            same = self.cfg.same_as(sym)
+            loss = next((r for r in losses if r["symbol"].upper() in same), None)
+            if loss:
+                why = f"{loss['symbol']} was sold at a loss on {loss['ts'][:10]}; no rebuy for 31 days"
+                opens[sym] = adds[sym] = why
+                continue
+            other = next((r for r in held if r["symbol"].upper() in same), None)
+            if other:
+                opens[sym] = f"another bot holds {other['symbol']}"
+                continue
+            bought = next((r for r in buys if r["symbol"].upper() in same), None)
+            if bought:
+                opens[sym] = f"another bot bought {bought['symbol']} on {bought['ts'][:10]}"
+        return opens, adds
+
+    def _record_exit(self, sym: str, loss: bool | None = None) -> None:
+        """Remember a closed position (cooldown) and, if it lost money, the wash-sale guard."""
+        self.db.record_exit(self.bot_id, sym)
+        if loss is None:
+            pos = self._last_positions.get(sym)
+            loss = True if not pos else pos.get("current_price", 0) <= pos.get("avg_entry_price", 0)
+        if loss:
+            self.db.record_loss_sale(self.bot_id, sym)
+
     # ---- one tick -------------------------------------------------------
 
     def tick(self) -> None:
@@ -143,7 +228,7 @@ class BotRunner(threading.Thread):
             due = time.monotonic() - self._last_full_refresh >= self.cfg.closed_refresh_seconds
             if due or self.state.get("account") is None:
                 self._refresh_account(clock, today)
-                self._refresh_extras(force=self.state.get("history") is None)
+                self._refresh_extras(force=not self.state.get("recent_orders"))
             self._set(status="running", status_detail="market closed", clock=clock, entry_blocker="market closed")
             return
 
@@ -181,6 +266,7 @@ class BotRunner(threading.Thread):
             last_order={s: self.db.last_order_ts(self.bot_id, s) for s in symbols},
             minutes_to_close=self._mins_to_close,
         )
+        ctx.wash_blocked, ctx.wash_blocked_add = self.wash_blocks(symbols, now)
         blocker = risk.entry_blocker(ctx)
         self._set(status="running", status_detail="", entry_blocker=blocker)
 
@@ -210,16 +296,16 @@ class BotRunner(threading.Thread):
         day_pl = 0.0
         if account.get("last_equity"):
             day_pl = (account["equity"] / account["last_equity"] - 1) * 100
+        ref = f"{self.broker}:{account.get('account_number') or account.get('id') or 'account'}"
+        self.db.note_equity(self.bot_id, today, ref, float(account.get("equity") or 0))
         public = {k: v for k, v in account.items() if k not in ("id", "account_number")}
-        self._set(account={**public, "day_pl_pct": round(day_pl, 3)}, positions=rows, clock=clock)
+        self._set(account={**public, "day_pl_pct": round(day_pl, 3)}, positions=rows, clock=clock,
+                  open_orders=len(open_orders))
         return account, positions, open_orders
 
     def _refresh_extras(self, force: bool = False) -> None:
         now = time.monotonic()
         try:
-            if force or now - self._last_history > 900:
-                self._last_history = now
-                self._set(history=self.client.portfolio_history("1M", "1D"))
             if force or now - self._last_orders > 120:
                 self._last_orders = now
                 self._set(recent_orders=self.client.closed_orders(15))
@@ -236,14 +322,16 @@ class BotRunner(threading.Thread):
                 continue  # order may still be filling
             self.db.delete_meta(self.bot_id, sym)
             if sym in self._seen_positions:
-                self.db.record_exit(self.bot_id, sym)
-                self.db.add_event(self.bot_id, "info", f"{sym} position closed at Alpaca (stop hit or closed outside the bot)")
+                self._record_exit(sym)  # a stop hit usually means a loss
+                self.db.add_event(self.bot_id, "info",
+                                  f"{sym} position closed at {self.broker_label} (stop hit or closed outside the bot)")
                 self._seen_positions.discard(sym)
         for sym in positions:
             self._seen_positions.add(sym)
             if sym not in meta:
                 self.db.upsert_meta(self.bot_id, sym, now.isoformat(timespec="seconds"), None)
                 self.db.add_event(self.bot_id, "info", f"Found a {sym} position the bot didn't open; it is now managed by the bot")
+        self._last_positions = dict(positions)
         return self.db.get_meta(self.bot_id)
 
     def _features(self, symbols: list[str], now_et: datetime) -> dict:
@@ -330,9 +418,9 @@ class BotRunner(threading.Thread):
             try:
                 self.client.close_all()
                 self.db.add_order(self.bot_id, "ALL", "sell", None, "flatten", status="submitted")
-                for sym in positions:
+                for sym, pos in positions.items():
                     self.db.delete_meta(self.bot_id, sym)
-                    self.db.record_exit(self.bot_id, sym)
+                    self._record_exit(sym, loss=pos.get("current_price", 0) <= pos.get("avg_entry_price", 0))
                     self._seen_positions.discard(sym)
             except AlpacaError as exc:
                 self.db.set_decision_outcome(did, "error", exc.message)
@@ -531,15 +619,20 @@ class BotRunner(threading.Thread):
             decision_id = self.db.add_decision(self.bot_id, f"close:{sym}", f"Close {sym}: {why}", decided_by,
                                                reason=why)
         try:
-            self.client.close_position(sym)
+            result = self.client.close_position(sym)
         except AlpacaError as exc:
             self.db.add_order(self.bot_id, sym, "sell", None, "close", error=str(exc))
             if decision_id:
                 self.db.set_decision_outcome(decision_id, "error", exc.message)
             return False, exc.message
+        if result is None:  # nothing was held any more (a stop got there first)
+            self.db.delete_meta(self.bot_id, sym)
+            if decision_id:
+                self.db.set_decision_outcome(decision_id, "held", f"no {sym} position left to close")
+            return True, f"no {sym} position left to close"
         self.db.add_order(self.bot_id, sym, "sell", None, "close", status="submitted")
         self.db.delete_meta(self.bot_id, sym)
-        self.db.record_exit(self.bot_id, sym)
+        self._record_exit(sym)
         self._seen_positions.discard(sym)
         if decision_id:
             self.db.set_decision_outcome(decision_id, "submitted", f"sell all {sym}")
@@ -550,11 +643,34 @@ class BotRunner(threading.Thread):
     def flatten(self) -> str:
         if not self.client:
             return "This bot isn't set up."
+        held = {p["symbol"]: p for p in self.client.positions()}
         self.client.close_all()
+        for sym, pos in held.items():
+            self.db.delete_meta(self.bot_id, sym)
+            self._record_exit(sym, loss=pos.get("current_price", 0) <= pos.get("avg_entry_price", 0))
+            self._seen_positions.discard(sym)
         self.db.add_order(self.bot_id, "ALL", "sell", None, "flatten", status="submitted")
         self.db.add_decision(self.bot_id, "close:ALL", "Close everything (owner)", "owner", outcome="submitted")
         self.db.add_event(self.bot_id, "info", "Owner closed all positions")
         return "Closing all positions (orders queue until the open if the market is closed)."
+
+    def prepare_move(self) -> str:
+        """Pause, close everything at the current broker, and flag the bot as moving."""
+        self.db.set_paused(self.bot_id, True)
+        self.db.set_moving(self.bot_id, True)
+        self.db.add_event(self.bot_id, "info", f"Owner started moving this bot off {self.broker_label}")
+        if self.client and self.client.positions():
+            self.flatten()
+            return (f"Paused and closing every position at {self.broker_label}. "
+                    "The card shows Ready to move once nothing is left.")
+        if self.client:
+            for o in self.client.open_orders():
+                if o.get("id"):
+                    self.client.cancel_order(o["id"])
+        return f"Paused. Nothing is held at {self.broker_label}, so it's ready to move."
+
+    def finish_move(self) -> None:
+        self.db.set_moving(self.bot_id, False)
 
 
 def _minutes_until(iso_ts: str | None, now: datetime) -> float | None:

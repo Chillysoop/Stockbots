@@ -36,6 +36,8 @@ class RiskContext:
     last_exit: dict = field(default_factory=dict)  # symbol -> ISO time
     last_order: dict = field(default_factory=dict)  # symbol -> ISO time
     minutes_to_close: float | None = None  # from Alpaca's clock (handles half days)
+    wash_blocked: dict = field(default_factory=dict)  # symbol -> why opening it could cause a wash sale
+    wash_blocked_add: dict = field(default_factory=dict)  # symbol -> why adding to it could
 
     @property
     def day_pl_pct(self) -> float:
@@ -133,6 +135,11 @@ def check(move: Move, ctx: RiskContext) -> Verdict:
         return Verdict(False, f"{sym} stop too far away")
 
     full_qty = full_size_qty(ctx, price)
+
+    if move.kind == "open" and sym in ctx.wash_blocked:
+        return Verdict(False, f"wash-sale guard: {ctx.wash_blocked[sym]}")
+    if move.kind == "add" and sym in ctx.wash_blocked_add:
+        return Verdict(False, f"wash-sale guard: {ctx.wash_blocked_add[sym]}")
 
     if move.kind == "open":
         if pos:
