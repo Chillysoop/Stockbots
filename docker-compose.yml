@@ -1,0 +1,49 @@
+# Stockbots: three AI trading bots on Alpaca. Paper trading by default.
+# Hostinger: deploy this file with Docker Manager, then open the server's address.
+# Anywhere else: `docker compose up -d` in the folder holding this file.
+name: stockbots
+
+services:
+  app:
+    image: ghcr.io/chillysoop/stockbots:latest
+    restart: unless-stopped
+    environment:
+      # Optional. Everything below has a safe default; keys are normally pasted on the Setup page.
+      MODE: ${MODE:-paper}
+      LIVE_ACK: ${LIVE_ACK:-}
+      TICK_SECONDS: ${TICK_SECONDS:-60}
+      MODEL_DAILY_USD_CAP: ${MODEL_DAILY_USD_CAP:-1}
+      DAILY_LOSS_STOP_PCT: ${DAILY_LOSS_STOP_PCT:-3}
+      JEV_MODEL: ${JEV_MODEL:-jev-latest}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-haiku-5-5}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
+      SETUP_WINDOW_MIN: ${SETUP_WINDOW_MIN:-120}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - bots-data:/data
+    expose:
+      - "8000"
+
+  web:
+    # Caddy in front: plain HTTP on the server's IP, or automatic HTTPS once
+    # PUBLIC_DOMAIN is set to a domain that points at this server.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    command: caddy reverse-proxy --from ${PUBLIC_DOMAIN:-:80} --to app:8000
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  bots-data:
+  caddy-data:
+  caddy-config:

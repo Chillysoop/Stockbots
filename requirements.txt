@@ -1,0 +1,4 @@
+starlette>=1.0,<2
+uvicorn>=0.30
+requests>=2.32,<3
+tzdata>=2024.1

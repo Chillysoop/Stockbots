@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stockbots</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <h1>Stockbots</h1>
+        <span class="mode-pill" id="mode">Paper</span>
+      </div>
+      <div class="market" id="market">Loading…</div>
+      <button class="btn quiet" id="logout" type="button">Log out</button>
+    </header>
+
+    <section class="race" aria-labelledby="race-title">
+      <div class="race-head">
+        <h2 id="race-title">Loading the race…</h2>
+        <p id="race-sub"></p>
+      </div>
+      <div id="chart"></div>
+    </section>
+
+    <section class="lanes" id="lanes" aria-label="Bots"></section>
+
+    <section class="feed">
+      <div class="panel">
+        <h2>Decisions</h2>
+        <p class="sub">Every time a bot had a real choice to make, newest first.</p>
+        <ol class="decisions" id="decisions"></ol>
+      </div>
+      <div class="panel">
+        <h2>Notices</h2>
+        <p class="sub">Stops placed, positions found, owner actions.</p>
+        <ul class="events" id="events"></ul>
+      </div>
+    </section>
+
+    <footer class="note">
+      Paper trading uses simulated money at real prices unless you deliberately switch to live. Not financial advice.
+    </footer>
+  </div>
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

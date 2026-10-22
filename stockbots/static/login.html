@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in to Stockbots</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="narrow" style="max-width: 440px; padding-top: 12vh;">
+    <h1>Stockbots</h1>
+    <p class="lede">Enter the owner password you picked during setup.</p>
+    <form id="login" class="step">
+      <label class="field">Owner password
+        <input type="password" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <div class="err" id="err" role="alert"></div>
+      <div class="submit-row"><button class="btn primary" type="submit">Log in</button></div>
+    </form>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>

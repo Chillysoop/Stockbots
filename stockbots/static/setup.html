@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Set up Stockbots</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Public+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="narrow">
+    <h1>Set up your bots</h1>
+    <p class="lede">Three bots, three AIs, three Alpaca paper accounts. Paste your keys once. They're saved on this server only, and the bots start paper trading as soon as every key checks out.</p>
+    <div id="banners"></div>
+
+    <form id="setup" novalidate hidden>
+      <section class="step">
+        <h2><span class="n">1</span> Agree to the ground rules</h2>
+        <label class="check"><input type="checkbox" name="agree"> This is an experiment, not financial advice. AI trading bots can and do lose money.</label>
+        <label class="check"><input type="checkbox" name="agree"> The bots use paper money. Real money needs manual changes on the server, made on purpose.</label>
+        <label class="check"><input type="checkbox" name="agree"> I'm responsible for my Alpaca, TypeSafe, Anthropic and OpenAI accounts and their bills.</label>
+        <div class="err" data-err="agree"></div>
+      </section>
+
+      <section class="step">
+        <h2><span class="n">2</span> Pick an owner password</h2>
+        <p class="help">You'll use it to log in to the dashboard. Write it down: it can be reset from the server, but not recovered.</p>
+        <label class="field">Password <span class="hint">(8 or more characters)</span>
+          <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+        </label>
+        <div class="err" data-err="password"></div>
+      </section>
+
+      <section class="step">
+        <h2><span class="n">3</span> Paste the AI keys</h2>
+        <p class="help">Each needs billing turned on. The bots cap AI spending at $1 a day each by default.</p>
+        <label class="field">Jev key <span class="hint">from console.typesafe.ai/keys</span>
+          <input type="password" name="jev_key" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="err" data-err="jev_key"></div>
+        <label class="field">Anthropic API key <span class="hint">from platform.claude.com, not your Claude subscription</span>
+          <input type="password" name="anthropic_key" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="err" data-err="anthropic_key"></div>
+        <label class="field">OpenAI API key <span class="hint">from platform.openai.com/api-keys</span>
+          <input type="password" name="openai_key" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="err" data-err="openai_key"></div>
+      </section>
+
+      <div id="bot-steps"></div>
+      <div class="err" data-err="accounts"></div>
+
+      <div class="submit-row">
+        <button class="btn primary" type="submit" id="go">Check keys and start paper trading</button>
+        <span id="progress" class="market" role="status"></span>
+      </div>
+    </form>
+  </main>
+  <script src="/static/setup.js"></script>
+</body>
+</html>
