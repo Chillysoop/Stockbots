@@ -19,6 +19,9 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
       OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-low}
       SETUP_WINDOW_MIN: ${SETUP_WINDOW_MIN:-120}
+      MAX_EXPOSURE_PCT: ${MAX_EXPOSURE_PCT:-100}
+      # Forgot the owner password? Set this (8+ characters), redeploy, log in with it.
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-}
       JEV_API_KEY: ${JEV_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

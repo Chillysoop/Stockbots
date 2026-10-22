@@ -31,16 +31,33 @@
     if (s.mode === "live") banner("This server is set to LIVE mode: these bots would trade real money. Use live Alpaca keys only if you mean it.", true);
 
     s.bots.forEach((b, i) => {
-      stepsEl.append(h("section", { class: "step bot", style: `--bot:var(--${b.id})` },
-        h("h2", {}, h("span", { class: "n" }, String(4 + i)), `${b.default_name}`),
-        h("p", { class: "help" }, `${b.ai_label} (${b.model}) makes the calls, trading as a ${b.style_label.toLowerCase()}. In Alpaca, create a separate paper account for this bot, switch to it, and generate its API keys.`),
+      const toggle = h("input", { type: "checkbox", name: `${b.id}.enabled`, checked: true });
+      const fields = h("div", { class: "bot-fields" },
         h("label", { class: "field" }, "Bot name", h("input", { type: "text", name: `${b.id}.name`, value: b.default_name, maxlength: 40 })),
         h("label", { class: "field" }, "Alpaca paper API key ID", h("input", { type: "text", name: `${b.id}.alpaca_key`, autocomplete: "off", spellcheck: "false" })),
         h("label", { class: "field" }, "Alpaca paper secret key", h("input", { type: "password", name: `${b.id}.alpaca_secret`, autocomplete: "off", spellcheck: "false" })),
         h("div", { class: "err", "data-err": `${b.id}.alpaca` }),
-        h("details", { class: "rules" }, h("summary", {}, "Its starting rules"), h("p", {}, b.rules), h("p", {}, "You can edit these from the dashboard later."))));
+        h("details", { class: "rules" }, h("summary", {}, "Its starting rules"), h("p", {}, b.rules), h("p", {}, "You can edit these from the dashboard later.")));
+      stepsEl.append(h("section", { class: "step bot", style: `--bot:var(--${b.id})` },
+        h("h2", {}, h("span", { class: "n" }, String(3 + i)), `${b.default_name}`),
+        h("p", { class: "help" }, `${b.ai_label} (${b.model}) makes the calls, trading as a ${b.style_label.toLowerCase()}. Give it its own Alpaca paper account: open a new paper account in Alpaca, switch to it, and generate its API keys.`),
+        h("label", { class: "check" }, toggle, "Run this bot"),
+        fields));
+      toggle.addEventListener("change", sync);
     });
+    sync();
     form.hidden = false;
+  }
+
+  // Hide the fields of bots that are off, and the AI keys nobody needs.
+  function sync() {
+    for (const id of ["claude", "jev", "openai"]) {
+      const on = form.elements[`${id}.enabled`] ? form.elements[`${id}.enabled`].checked : true;
+      const step = form.elements[`${id}.enabled`] && form.elements[`${id}.enabled`].closest(".step");
+      if (step) step.querySelector(".bot-fields").hidden = !on;
+      const keyBox = document.querySelector(`[data-bot="${id}"]`);
+      if (keyBox) keyBox.hidden = !on;
+    }
   }
 
   form.addEventListener("submit", async (ev) => {
@@ -56,7 +73,8 @@
       bots: {},
     };
     for (const id of ["claude", "jev", "openai"]) {
-      body.bots[id] = { name: val(`${id}.name`), alpaca_key: val(`${id}.alpaca_key`), alpaca_secret: val(`${id}.alpaca_secret`) };
+      const on = form.elements[`${id}.enabled`] ? form.elements[`${id}.enabled`].checked : true;
+      body.bots[id] = { enabled: on, name: val(`${id}.name`), alpaca_key: val(`${id}.alpaca_key`), alpaca_secret: val(`${id}.alpaca_secret`) };
     }
     const go = document.getElementById("go");
     const progress = document.getElementById("progress");

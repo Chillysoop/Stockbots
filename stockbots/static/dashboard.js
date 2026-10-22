@@ -128,8 +128,12 @@
     if (!bots.length) {
       title.textContent = "No bots are running";
       sub.textContent = "Finish Setup to start them.";
+    } else if (bots.length === 1) {
+      const r = ranked[0].r;
+      title.textContent = r === null || Math.abs(r) < 0.005 ? `${bots[0].name} is ready` : `${bots[0].name}: ${pct(r)}`;
+      sub.textContent = "Add more bots any time to race them against each other.";
     } else if (!leader || leader.r === null || Math.abs(leader.r) < 0.005 && ranked.every((x) => Math.abs(x.r || 0) < 0.005)) {
-      title.textContent = "All three start level";
+      title.textContent = bots.length === 3 ? "All three start level" : "Both start level";
       sub.textContent = "The race chart fills in as the bots trade.";
     } else {
       const gap = ranked.length > 1 && ranked[1].r !== null ? leader.r - ranked[1].r : null;
@@ -377,6 +381,18 @@
     } catch (e) { toast(e.message); }
   }
 
+  document.getElementById("reopen").addEventListener("click", async () => {
+    const ok = confirm(
+      "This stops the bots and opens Setup again so you can change keys or turn bots on and off. " +
+      "Open positions and their stops stay at Alpaca. Finish Setup right away: until you do, anyone who " +
+      "reaches the page first could claim it. Continue?");
+    if (!ok) return;
+    try {
+      await api("/api/setup/reopen", { method: "POST", body: {} });
+      location.href = "/setup";
+    } catch (e) { toast(e.message); }
+  });
+
   document.getElementById("logout").addEventListener("click", async () => {
     await api("/api/logout", { method: "POST", body: {} }).catch(() => {});
     location.href = "/login";
@@ -387,6 +403,7 @@
   async function refresh() {
     try {
       const state = await api("/api/state");
+      state.bots = (state.bots || []).filter((b) => b.enabled);
       lastState = state;
       renderHeader(state);
       const ranked = renderRace(state.bots);

@@ -256,7 +256,9 @@ ul.events li.error { color: var(--loss); }
   z-index: 10;
 }
 
-footer.note { color: var(--ink-3); font-size: 12.5px; padding: 0 0 30px; }
+footer.note { color: var(--ink-3); font-size: 12.5px; padding: 0 0 30px; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+footer.note p { margin: 0; }
+footer.note .btn { font-size: 13px; }
 
 /* ---- setup and login ---- */
 .narrow { max-width: 720px; margin: 0 auto; padding: 28px 20px 60px; }

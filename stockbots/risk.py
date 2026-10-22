@@ -157,6 +157,10 @@ def check(move: Move, ctx: RiskContext) -> Verdict:
     else:
         return Verdict(False, f"unknown move {move.kind}")
 
+    # Never hold more than MAX_EXPOSURE_PCT of the account in total (100% = no margin borrowing).
+    held = sum(float(p.get("market_value") or 0) for p in ctx.positions.values())
+    room_total = ctx.account.get("equity", 0) * ctx.cfg.max_exposure_pct / 100.0 - held
+    qty = min(qty, int(math.floor(room_total / price)) if room_total > 0 else 0)
     bp = ctx.account.get("buying_power", 0)
     if qty * price * 1.02 > bp:
         qty = int(math.floor(bp / (price * 1.02)))

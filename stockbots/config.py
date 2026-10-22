@@ -67,6 +67,7 @@ class Config:
         self.reentry_cooldown_min = env_int("REENTRY_COOLDOWN_MIN", 60)
         self.min_price = env_float("MIN_PRICE", 5.0)
         self.max_position_usd = env_float("MAX_POSITION_USD", 0.0)  # 0 = no cap beyond % of equity
+        self.max_exposure_pct = env_float("MAX_EXPOSURE_PCT", 100.0)  # total holdings vs equity: 100 = never borrow
         self.entry_start_et = env("ENTRY_START_ET", "09:35")
         self.entry_end_et = env("ENTRY_END_ET", "15:45")
         self.fallback_opens_trades = env_bool("FALLBACK_OPENS_TRADES", False)

@@ -131,22 +131,32 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
         bots: dict[str, dict] = {}
         for bot_id in BOT_IDS:
             b = bots_in.get(bot_id) or {}
+            enabled = b.get("enabled", True) is not False
             bots[bot_id] = {
+                "enabled": enabled,
                 "name": str(b.get("name") or "").strip()[:40],
-                "alpaca_key": str(b.get("alpaca_key") or "").strip(),
-                "alpaca_secret": str(b.get("alpaca_secret") or "").strip(),
+                "alpaca_key": str(b.get("alpaca_key") or "").strip() if enabled else "",
+                "alpaca_secret": str(b.get("alpaca_secret") or "").strip() if enabled else "",
             }
-            if not bots[bot_id]["alpaca_key"] or not bots[bot_id]["alpaca_secret"]:
+            if enabled and (not bots[bot_id]["alpaca_key"] or not bots[bot_id]["alpaca_secret"]):
                 errors[f"{bot_id}.alpaca"] = "Paste this bot's Alpaca key ID and secret."
-        for field, value in ai_keys.items():
-            if not value:
+        on = [b for b in BOTS if bots[b["id"]]["enabled"]]
+        if not on:
+            errors["bots"] = "Turn on at least one bot."
+        needed = {PROVIDER_KEY[b["provider"]] for b in on}
+        for field in needed:
+            if not ai_keys[field]:
                 errors[field] = "Paste this key."
+        for field in set(ai_keys) - needed:
+            ai_keys[field] = ""  # not used by any bot that's on: don't keep it
         if errors:
             return JSONResponse({"ok": False, "errors": errors}, status_code=400)
 
         # Check every key for real (these calls are free).
         accounts: dict[str, str] = {}
         for bot_id, b in bots.items():
+            if not b["enabled"]:
+                continue
             try:
                 acct = await run_in_threadpool(check_alpaca, b["alpaca_key"], b["alpaca_secret"])
                 accounts[bot_id] = str(acct.get("account_number") or acct.get("id") or bot_id)
@@ -156,10 +166,10 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
                 else:
                     msg = f"Couldn't check these keys: {exc.message}"
                 errors[f"{bot_id}.alpaca"] = msg
-        if len(accounts) == len(BOT_IDS) and len(set(accounts.values())) < len(BOT_IDS):
+        if len(accounts) == len(on) and len(set(accounts.values())) < len(accounts):
             errors["accounts"] = ("Two bots are using the same Alpaca account. Give each bot its own paper "
                                   "account so their trades don't collide.")
-        for bot in BOTS:
+        for bot in on:
             field = PROVIDER_KEY[bot["provider"]]
             if field in errors:
                 continue
@@ -204,6 +214,15 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
             return json_error("Wrong password.", 401)
         resp = JSONResponse({"ok": True})
         set_session(resp, request)
+        return resp
+
+    async def setup_reopen(request: Request):
+        bad = require_owner(request)
+        if bad:
+            return bad
+        await run_in_threadpool(app.reopen_setup)
+        resp = JSONResponse({"ok": True, "minutes": app.cfg.setup_window_min})
+        resp.delete_cookie(COOKIE, path="/")
         return resp
 
     async def logout(request: Request):
@@ -264,6 +283,7 @@ def create_web(app: App, alpaca_check=None) -> Starlette:
         Route("/healthz", healthz),
         Route("/api/setup", setup_status, methods=["GET"]),
         Route("/api/setup", setup_submit, methods=["POST"]),
+        Route("/api/setup/reopen", setup_reopen, methods=["POST"]),
         Route("/api/login", login, methods=["POST"]),
         Route("/api/logout", logout, methods=["POST"]),
         Route("/api/state", state),

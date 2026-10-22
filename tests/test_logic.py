@@ -159,6 +159,17 @@ class RiskTests(unittest.TestCase):
         self.assertFalse(risk.check(add, ctx_for(positions=pos, meta={"AAPL": {"added": 1}})).ok)
         self.assertFalse(risk.check(add, ctx_for()).ok, "nothing to add to")
 
+    def test_never_borrows_on_margin(self):
+        held = {s: {"qty": 1, "market_value": 30_000.0} for s in ("A", "B", "C")}  # 90% invested
+        v = risk.check(OPEN, ctx_for(positions=held))
+        self.assertTrue(v.ok, v.reason)
+        self.assertEqual(v.qty, 100, "only the last 10% of the account is left to spend")
+        full = {s: {"qty": 1, "market_value": 25_000.0} for s in ("A", "B", "C")}
+        full["D"] = {"qty": 1, "market_value": 25_000.0}
+        add = Move(id="add:A", kind="add", symbol="A", text="add")
+        ctx = ctx_for(style="trend", positions=full, features={"A": dict(price=100.0, atr14=2.0)})
+        self.assertFalse(risk.check(add, ctx).ok, "fully invested: no adds")
+
     def test_close_and_hold(self):
         close = Move(id="close:AAPL", kind="close", symbol="AAPL", text="close")
         self.assertFalse(risk.check(close, ctx_for()).ok)

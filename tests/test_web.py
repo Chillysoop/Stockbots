@@ -155,6 +155,28 @@ class WebTests(unittest.TestCase):
         self.assertIn("Stockbots", page.text)
         self.assertEqual(page.headers.get("x-frame-options"), "DENY")
 
+        # The owner can reopen Setup and come back with just one bot
+        self.assertEqual(requests.post(self.base + "/api/setup/reopen", headers=H, json={}).status_code, 401)
+        r = s.post(self.base + "/api/setup/reopen", headers=H, json={})
+        self.assertTrue(r.json()["ok"])
+        self.assertFalse(self.app.settings.setup_done)
+        self.assertTrue(s.get(self.base + "/api/setup").json()["open"])
+        only_jev = self.setup_body(anthropic_key="unused-key", openai_key="")
+        only_jev["bots"]["claude"] = {"enabled": False}
+        only_jev["bots"]["openai"] = {"enabled": False}
+        none_on = self.setup_body()
+        for b in none_on["bots"].values():
+            b["enabled"] = False
+        with mock.patch("stockbots.brains.JevBrain.check_key", return_value=(True, "ok")):
+            r = s.post(self.base + "/api/setup", headers=H, json=none_on)
+            self.assertIn("bots", r.json()["errors"])
+            r = s.post(self.base + "/api/setup", headers=H, json=only_jev)
+        self.assertEqual(r.status_code, 200, r.text)
+        state = s.get(self.base + "/api/state").json()
+        on = {b["id"]: b["enabled"] for b in state["bots"]}
+        self.assertEqual(on, {"claude": False, "jev": True, "openai": False})
+        self.assertEqual(self.app.settings.data.get("anthropic_key"), "", "keys for bots that are off aren't kept")
+
 
 if __name__ == "__main__":
     unittest.main()

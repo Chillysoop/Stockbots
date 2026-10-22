@@ -63,7 +63,7 @@ class BotRunner(threading.Thread):
         self._mins_to_close: float | None = None
         self._seen_positions: set[str] = set()
         self.state: dict = {
-            "status": "starting" if client else "not set up",
+            "status": "starting" if client else "off",
             "status_detail": "",
             "account": None,
             "positions": [],
@@ -107,6 +107,7 @@ class BotRunner(threading.Thread):
         return {
             "id": self.bot_id,
             "name": self.display_name,
+            "enabled": self.client is not None,
             "ai_label": self.bot["ai_label"],
             "provider": self.bot["provider"],
             "model": self.cfg.provider_model(self.bot["provider"]),

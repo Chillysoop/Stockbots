@@ -49,7 +49,8 @@ class App:
         for bot in BOTS:
             b = self.settings.bot(bot["id"])
             client = None
-            if b.get("alpaca_key") and b.get("alpaca_secret"):
+            enabled = b.get("enabled", True) is not False
+            if enabled and b.get("alpaca_key") and b.get("alpaca_secret"):
                 client = self.client_factory(b["alpaca_key"], b["alpaca_secret"])
             ai_key = self.settings.key(PROVIDER_KEY[bot["provider"]])
             brain = self.brain_factory(bot["provider"], self.cfg, ai_key)
@@ -58,3 +59,14 @@ class App:
         self.engine.start(runners)
         log.info("Started %d bots (%s mode)", len([r for r in runners if r.client]),
                  "LIVE" if self.cfg.live else "paper")
+
+    def reopen_setup(self) -> None:
+        """Stop the bots and start Setup over (positions and their stops stay at Alpaca)."""
+        self.engine.stop()
+        try:
+            os.remove(self.settings.path)
+        except FileNotFoundError:
+            pass
+        self.settings.data = {}
+        self.started = time.time()  # a fresh setup window
+        self.db.add_event(None, "info", "Owner reopened Setup; bots stopped until it's finished")
